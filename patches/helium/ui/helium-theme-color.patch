@@ -1,0 +1,195 @@
+--- a/ui/color/color_provider_key.h
++++ b/ui/color/color_provider_key.h
+@@ -23,4 +23,5 @@
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/color/system_theme.h"
++#include <optional>
+ 
+ namespace color_utils {
+@@ -73,2 +74,4 @@
+   std::optional<SkColor> user_color;
++  std::optional<SkColor> helium_theme_color;
+   SchemeVariant scheme_variant = SchemeVariant::kTonalSpot;
+@@ -80,10 +80,10 @@
+   bool operator<(const ColorProviderKey& other) const {
+     return std::tie(color_mode, contrast_mode, forced_colors, system_theme,
+                     frame_type, frame_style, user_color, scheme_variant,
+-                    custom_theme, app_generator) <
++                    custom_theme, app_generator, helium_theme_color) <
+            std::tie(other.color_mode, other.contrast_mode, other.forced_colors,
+                     other.system_theme, other.frame_type, other.frame_style,
+-                    other.user_color, other.scheme_variant, other.custom_theme,
+-                    other.app_generator);
++                    other.user_color, other.scheme_variant, other.custom_theme,
++                    other.app_generator, other.helium_theme_color);
+   }
+ 
+   bool operator==(const ColorProviderKey& other) const {
+     return std::tie(color_mode, contrast_mode, forced_colors, system_theme,
+                     frame_type, frame_style, user_color, scheme_variant,
+-                    custom_theme, app_generator) ==
++                    custom_theme, app_generator, helium_theme_color) ==
+            std::tie(other.color_mode, other.contrast_mode, other.forced_colors,
+                     other.system_theme, other.frame_type, other.frame_style,
+-                    other.user_color, other.scheme_variant, other.custom_theme,
+-                    other.app_generator);
++                    other.user_color, other.scheme_variant, other.custom_theme,
++                    other.app_generator, other.helium_theme_color);
+   }
+
+--- a/chrome/browser/ui/views/frame/browser_frame.h
++++ b/chrome/browser/ui/views/frame/browser_frame.h
+@@ -19,4 +19,5 @@
+ #include "ui/views/widget/widget.h"
++#include <optional>
+ 
+ class BrowserNonClientFrameView;
+@@ -48,4 +49,7 @@
+   ~BrowserFrame() override;
+ 
++  ui::ColorProviderKey GetColorProviderKey() const override;
++  void SetHeliumThemeColor(std::optional<SkColor> color);
++
+   // Initialize the frame.
+   void InitBrowserFrame();
+@@ -150,4 +154,7 @@
+   std::unique_ptr<BrowserFrameHeaderView> header_view_;
+ #endif
++
++  std::optional<SkColor> helium_theme_color_;
+ };
+
+--- a/chrome/browser/ui/views/frame/browser_frame.cc
++++ b/chrome/browser/ui/views/frame/browser_frame.cc
+@@ -20,4 +20,15 @@
+ #include "ui/views/widget/widget_delegate.h"
+ 
++ui::ColorProviderKey BrowserFrame::GetColorProviderKey() const {
++  auto key = views::Widget::GetColorProviderKey();
++  key.helium_theme_color = helium_theme_color_;
++  return key;
++}
++
++void BrowserFrame::SetHeliumThemeColor(std::optional<SkColor> color) {
++  if (helium_theme_color_ == color)
++    return;
++  helium_theme_color_ = color;
++  ThemeChanged();
++}
+
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -25,4 +25,5 @@
+ #include "ui/views/widget/widget_observer.h"
++#include "content/public/browser/web_contents_observer.h"
+ 
+ class BookmarkBarView;
+@@ -118,4 +119,16 @@
+   ~BrowserView() override;
+ 
++  class ActiveTabThemeObserver : public content::WebContentsObserver {
++   public:
++    explicit ActiveTabThemeObserver(BrowserView* browser_view);
++    ~ActiveTabThemeObserver() override;
++    void SetWebContents(content::WebContents* web_contents);
++    // content::WebContentsObserver:
++    void DidChangeThemeColor(std::optional<SkColor> theme_color) override;
++   private:
++    void UpdateThemeColor();
++    raw_ptr<BrowserView> browser_view_;
++  };
++  void UpdateHeliumThemeColor(std::optional<SkColor> color);
++
+   // Returns the BrowserView associated with the specified Browser.
+@@ -350,4 +363,6 @@
+   std::unique_ptr<AccessibilityFocusHighlight> accessibility_focus_highlight_;
+ #endif
++
++  std::unique_ptr<ActiveTabThemeObserver> active_tab_theme_observer_;
+ };
+
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -30,4 +30,30 @@
+ #include "ui/views/widget/widget.h"
+ 
++BrowserView::ActiveTabThemeObserver::ActiveTabThemeObserver(BrowserView* browser_view)
++    : browser_view_(browser_view) {}
++
++BrowserView::ActiveTabThemeObserver::~ActiveTabThemeObserver() = default;
++
++void BrowserView::ActiveTabThemeObserver::SetWebContents(content::WebContents* web_contents) {
++  Observe(web_contents);
++  UpdateThemeColor();
++}
++
++void BrowserView::ActiveTabThemeObserver::DidChangeThemeColor(std::optional<SkColor> theme_color) {
++  UpdateThemeColor();
++}
++
++void BrowserView::ActiveTabThemeObserver::UpdateThemeColor() {
++  std::optional<SkColor> color;
++  if (web_contents()) {
++    color = web_contents()->GetThemeColor();
++  }
++  browser_view_->UpdateHeliumThemeColor(color);
++}
++
++void BrowserView::UpdateHeliumThemeColor(std::optional<SkColor> color) {
++  if (frame()) {
++    frame()->SetHeliumThemeColor(color);
++  }
++}
+@@ -620,4 +646,5 @@
+       accessibility_focus_highlight_(std::make_unique<AccessibilityFocusHighlight>(this)) {
+ #endif
++  active_tab_theme_observer_ = std::make_unique<ActiveTabThemeObserver>(this);
+   browser_->tab_strip_model()->AddObserver(this);
+@@ -1050,4 +1077,7 @@
+                                 const TabStripSelectionChange& selection) {
+   TabStripModelObserver::OnTabStripModelChanged(tab_strip_model, change, selection);
++  if (selection.active_tab_changed()) {
++    active_tab_theme_observer_->SetWebContents(selection.new_contents);
++  }
+ }
+
+--- a/chrome/browser/ui/color/chrome_color_mixer.cc
++++ b/chrome/browser/ui/color/chrome_color_mixer.cc
+@@ -20,4 +20,5 @@
+ #include "ui/color/color_recipe.h"
++#include "ui/gfx/color_utils.h"
+ 
+ namespace {
+@@ -820,4 +821,32 @@
+   mixer[kColorToolbarSeparator] = {kColorToolbarSeparatorDefault};
+ 
++  if (key.helium_theme_color) {
++    SkColor theme_color = *key.helium_theme_color;
++    mixer[kColorToolbar] = { theme_color };
++    
++    // Calculate contrast and background for omnibox (location bar)
++    SkColor contrast_color = color_utils::GetColorWithMaxContrast(theme_color);
++    bool is_dark = (contrast_color == SK_ColorWHITE);
++    SkColor location_bar_bg = is_dark ? SkColorSetA(SK_ColorWHITE, 0x1F)
++                                      : SkColorSetA(SK_ColorBLACK, 0x14);
++    
++    mixer[kColorLocationBarBackground] = { color_utils::GetResultingPaintColor(location_bar_bg, theme_color) };
++    mixer[kColorToolbarButtonText] = { contrast_color };
++    mixer[kColorToolbarButtonIcon] = { contrast_color };
++    mixer[kColorToolbarButtonIconHovered] = { contrast_color };
++    mixer[kColorToolbarButtonIconPressed] = { contrast_color };
++    mixer[kColorToolbarText] = { contrast_color };
++    
++    // Active tab background and foreground
++    mixer[kColorTabBackgroundActiveFrameActive] = { kColorLocationBarBackground };
++    mixer[kColorTabForegroundActiveFrameActive] = { contrast_color };
++    
++    // Inactive tab text/icons
++    mixer[kColorTabForegroundInactiveFrameActive] = { SkColorSetA(contrast_color, 0xB2) }; // 70% opacity for inactive tab text
++    
++    // Caption buttons (minimize, maximize, close) should have maximum contrast too!
++    mixer[kColorFrameCaptionActive] = { contrast_color };
++  }
++
+   AddNativeChromeColorMixer(provider, key);
+ }
