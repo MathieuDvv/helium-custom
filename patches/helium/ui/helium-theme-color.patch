@@ -8,7 +8,7 @@
    std::optional<SchemeVariant> scheme_variant = std::nullopt;
    scoped_refptr<ThemeInitializerSupplier> custom_theme = nullptr;
    // Only dereferenced when populating the ColorMixer. After that, used to
-@@ -148,12 +149,13 @@ struct COMPONENT_EXPORT(COLOR_PROVIDER_K
+@@ -147,12 +148,13 @@ struct COMPONENT_EXPORT(COLOR_PROVIDER_K
      auto* rhs_app_controller = other.app_controller.get();
      return std::tie(color_mode, contrast_mode, forced_colors, system_theme,
                      frame_type, frame_style, user_color_source, user_color,
